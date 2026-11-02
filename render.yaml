@@ -10,10 +10,6 @@ services:
       - key: APP_ENV
         value: production
       - key: LLM_PROVIDER
-        sync: false
-      - key: OPENAI_API_KEY
-        sync: false
+        value: openrouter
       - key: OPENROUTER_API_KEY
-        sync: false
-      - key: GEMINI_API_KEY
         sync: false
