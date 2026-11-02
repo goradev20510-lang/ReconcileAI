@@ -1,0 +1,15 @@
+streamlit
+pandas
+numpy
+openai>=1.54.0
+httpx>=0.23.0,<0.28.0
+python-dotenv
+rapidfuzz
+PyMuPDF
+openpyxl
+pydantic
+python-dateutil
+Pillow
+pytesseract
+xlrd
+pytest
