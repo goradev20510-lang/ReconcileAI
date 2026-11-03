@@ -183,7 +183,8 @@ def test_score_exact_match_should_be_high():
         }
     }]
     scored = score_candidates(txn, candidates)
-    assert scored[0]["score"] >= 0.70
+    from config.thresholds import AUTO_MATCH_THRESHOLD
+    assert scored[0]["score"] >= AUTO_MATCH_THRESHOLD
 
 
 def test_score_no_signals_should_be_low():
@@ -202,33 +203,20 @@ def test_score_no_signals_should_be_low():
         }
     }]
     scored = score_candidates(txn, candidates)
-    assert scored[0]["score"] < 0.15
+    from config.thresholds import REVIEW_THRESHOLD
+    assert scored[0]["score"] < min(0.15, REVIEW_THRESHOLD)
 
 
 # ── Database integration tests ────────────────────────────────────────────────
 
-def test_database_insert_and_retrieve():
+def test_database_insert_and_retrieve(db):
     """Basic round-trip: insert an invoice, read it back."""
-    from database.db import initialise_database
     from database.repositories import insert_invoice, get_invoice
-    import tempfile, os
-    # Use a temp DB for this test
-    os.environ["DATABASE_PATH"] = "database/test_reconcile.db"
-    from config import settings
-    settings.DATABASE_PATH = __import__("pathlib").Path("database/test_reconcile.db")
-    # Re-import db to pick up new path
-    import importlib
-    import database.db as db_mod
-    importlib.reload(db_mod)
-    db_mod.initialise_database()
-
     inv_data = {
         "invoice_id": "TEST-INV-001", "customer_name": "Test Corp",
         "total_amount": 59000, "outstanding_amount": 59000,
         "taxable_amount": 50000, "gst_amount": 9000, "currency": "INR", "status": "open",
     }
-    db_mod._local.conn = None  # Reset thread-local to use new path
-    db_mod.initialise_database()
     iid = insert_invoice(inv_data)
     assert iid == "TEST-INV-001"
     retrieved = get_invoice("TEST-INV-001")

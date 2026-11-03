@@ -4,24 +4,34 @@ Aggregates KPI data for the Streamlit dashboard.
 All numbers come from the database — not the LLM.
 """
 from __future__ import annotations
-from database.repositories import get_reconciliation_summary, get_all_transactions, get_all_invoices
+from datetime import date
+
+from database.repositories import get_reconciliation_summary, get_all_transactions
 
 
 def get_dashboard_kpis() -> dict:
     """Return all KPIs needed by the dashboard in one call."""
-    summary  = get_reconciliation_summary()
-    txns     = get_all_transactions()
-    invoices = get_all_invoices()
-
-    total_inv_value  = sum(float(inv.get("total_amount", 0)) for inv in invoices)
-    total_outstanding = sum(float(inv.get("outstanding_amount", 0)) for inv in invoices)
-    total_received   = sum(float(t.get("credit_amount", 0)) for t in txns)
-    auto_rate        = summary["matched"] / max(summary["total_transactions"], 1)
-
+    s = get_reconciliation_summary()
+    total = max(s["total_transactions"], 1)
     return {
-        **summary,
-        "total_invoice_value":   total_inv_value,
-        "total_outstanding":     total_outstanding,
-        "total_received":        total_received,
-        "auto_reconciliation_rate": auto_rate,
+        **s,
+        "total_invoice_value":      s["invoice_value"],
+        "total_outstanding":        s["outstanding_value"],
+        "total_received":           s["amount_received"],
+        "auto_reconciliation_rate": s["matched"] / total,
+        "value_match_rate":         s["amount_matched"] / max(s["amount_received"], 1),
     }
+
+
+def get_recent_transactions(n: int = 10) -> list[dict]:
+    return list(reversed(get_all_transactions()[-n:]))
+
+
+def get_aging_buckets(as_of: date | None = None) -> dict[str, float]:
+    from reporting.report_generator import aging_report, AGING_BUCKETS
+    df = aging_report(as_of)
+    out = {b: 0.0 for b in AGING_BUCKETS}
+    if not df.empty:
+        for b, v in df.groupby("bucket")["outstanding_amount"].sum().items():
+            out[b] = round(float(v), 2)
+    return out

@@ -1,0 +1,493 @@
+{
+  "params": {
+    "score_weights": {
+      "invoice_ref_exact": 0.306,
+      "customer_exact": 0.0724,
+      "customer_fuzzy": 0.0584,
+      "amount_exact": 0.306,
+      "amount_within_tol": 0.2546,
+      "date_proximity": 0.0026
+    },
+    "auto_match_threshold": 0.4636,
+    "review_threshold": 0.0834,
+    "ambiguity_margin": 0.1439,
+    "customer_name_fuzzy_min": 60
+  },
+  "trained_at": "2026-11-03T00:09:20+00:00",
+  "data": {
+    "path": "data/training/batches.jsonl",
+    "batches": 400,
+    "transactions": 11598
+  },
+  "search": {
+    "random_trials": 4000,
+    "local_steps": 1500,
+    "seed": 0
+  },
+  "cost_model": {
+    "COST_WRONG_AUTO": 10.0,
+    "COST_AUTO_NEEDS_CHECK": 3.0,
+    "COST_UNMATCHED_MISS": 4.0,
+    "COST_REVIEW_INSTEAD_OF_AUTO": 1.0,
+    "COST_REVIEW_WRONG_SUGGESTION": 0.5,
+    "COST_REVIEW_UNMATCHED": 0.5
+  },
+  "baseline_params": {
+    "score_weights": {
+      "invoice_ref_exact": 0.5,
+      "customer_exact": 0.15,
+      "customer_fuzzy": 0.1,
+      "amount_exact": 0.15,
+      "amount_within_tol": 0.05,
+      "date_proximity": 0.05
+    },
+    "auto_match_threshold": 0.8,
+    "review_threshold": 0.5,
+    "ambiguity_margin": 0.1,
+    "customer_name_fuzzy_min": 75
+  },
+  "metrics": {
+    "train": {
+      "baseline": {
+        "transactions": 8158,
+        "mean_cost": 0.8502696739396911,
+        "outcome_accuracy": 0.5979406717332679,
+        "zero_cost_rate": 0.5649669036528561,
+        "auto_match_rate": 0.2023780338318215,
+        "auto_match_precision": 1.0,
+        "wrong_auto_matches": 0,
+        "review_rate": 0.6054179946065212,
+        "unmatched_rate": 0.19220397156165728,
+        "missed_to_unmatched": 1197,
+        "top1_accuracy_when_truth": 0.950320303307622
+      },
+      "learned": {
+        "transactions": 8158,
+        "mean_cost": 0.06257661191468497,
+        "outcome_accuracy": 0.9490071095856828,
+        "zero_cost_rate": 0.9331944103947046,
+        "auto_match_rate": 0.4352782544741358,
+        "auto_match_precision": 1.0,
+        "wrong_auto_matches": 0,
+        "review_rate": 0.5213287570482962,
+        "unmatched_rate": 0.043392988477568034,
+        "missed_to_unmatched": 43,
+        "top1_accuracy_when_truth": 0.975160151653811
+      }
+    },
+    "val": {
+      "baseline": {
+        "transactions": 1726,
+        "mean_cost": 0.8403823870220162,
+        "outcome_accuracy": 0.5909617612977984,
+        "zero_cost_rate": 0.5666280417149478,
+        "auto_match_rate": 0.20278099652375434,
+        "auto_match_precision": 1.0,
+        "wrong_auto_matches": 0,
+        "review_rate": 0.6129779837775203,
+        "unmatched_rate": 0.1842410196987254,
+        "missed_to_unmatched": 245,
+        "top1_accuracy_when_truth": 0.9607361963190184
+      },
+      "learned": {
+        "transactions": 1726,
+        "mean_cost": 0.06257242178447277,
+        "outcome_accuracy": 0.9524913093858632,
+        "zero_cost_rate": 0.9449594438006953,
+        "auto_match_rate": 0.4495944380069525,
+        "auto_match_precision": 1.0,
+        "wrong_auto_matches": 0,
+        "review_rate": 0.5069524913093859,
+        "unmatched_rate": 0.043453070683661645,
+        "missed_to_unmatched": 12,
+        "top1_accuracy_when_truth": 0.9822085889570552
+      }
+    },
+    "test": {
+      "baseline": {
+        "transactions": 1714,
+        "mean_cost": 0.882147024504084,
+        "outcome_accuracy": 0.588098016336056,
+        "zero_cost_rate": 0.558343057176196,
+        "auto_match_rate": 0.20653442240373396,
+        "auto_match_precision": 1.0,
+        "wrong_auto_matches": 0,
+        "review_rate": 0.6015169194865811,
+        "unmatched_rate": 0.19194865810968495,
+        "missed_to_unmatched": 264,
+        "top1_accuracy_when_truth": 0.9520295202952029
+      },
+      "learned": {
+        "transactions": 1714,
+        "mean_cost": 0.062427071178529754,
+        "outcome_accuracy": 0.9480746791131855,
+        "zero_cost_rate": 0.9369894982497082,
+        "auto_match_rate": 0.44340723453908987,
+        "auto_match_precision": 1.0,
+        "wrong_auto_matches": 0,
+        "review_rate": 0.5215869311551925,
+        "unmatched_rate": 0.03500583430571762,
+        "missed_to_unmatched": 9,
+        "top1_accuracy_when_truth": 0.9790897908979089
+      }
+    }
+  },
+  "per_scenario_test": {
+    "baseline": {
+      "amount_discrepancy": {
+        "n": 42,
+        "expected": "review",
+        "matched": 0.0,
+        "review": 1.0,
+        "unmatched": 0.0,
+        "top_true": 1.0
+      },
+      "bank_charges": {
+        "n": 62,
+        "expected": "matched",
+        "matched": 0.0,
+        "review": 1.0,
+        "unmatched": 0.0,
+        "top_true": 1.0
+      },
+      "bulk_payment": {
+        "n": 43,
+        "expected": "review",
+        "matched": 0.0,
+        "review": 0.5116279069767442,
+        "unmatched": 0.4883720930232558,
+        "top_true": 0.3953488372093023
+      },
+      "bulk_with_remittance": {
+        "n": 31,
+        "expected": "review",
+        "matched": 0.0,
+        "review": 1.0,
+        "unmatched": 0.0,
+        "top_true": 1.0
+      },
+      "exact_ref": {
+        "n": 362,
+        "expected": "matched",
+        "matched": 0.494475138121547,
+        "review": 0.505524861878453,
+        "unmatched": 0.0,
+        "top_true": 1.0
+      },
+      "exact_ref_outstanding": {
+        "n": 58,
+        "expected": "matched",
+        "matched": 0.5689655172413793,
+        "review": 0.43103448275862066,
+        "unmatched": 0.0,
+        "top_true": 1.0
+      },
+      "lookalike_customer_noref": {
+        "n": 34,
+        "expected": "review",
+        "matched": 0.0,
+        "review": 0.3235294117647059,
+        "unmatched": 0.6764705882352942,
+        "top_true": 0.9411764705882353
+      },
+      "lookalike_customer_ref": {
+        "n": 22,
+        "expected": "matched",
+        "matched": 0.45454545454545453,
+        "review": 0.5454545454545454,
+        "unmatched": 0.0,
+        "top_true": 1.0
+      },
+      "name_amount_ambiguous": {
+        "n": 44,
+        "expected": "review",
+        "matched": 0.0,
+        "review": 1.0,
+        "unmatched": 0.0,
+        "top_true": 0.9318181818181818
+      },
+      "name_amount_unique": {
+        "n": 177,
+        "expected": "review",
+        "matched": 0.0,
+        "review": 0.02824858757062147,
+        "unmatched": 0.9717514124293786,
+        "top_true": 0.9943502824858758
+      },
+      "non_ar_credit": {
+        "n": 21,
+        "expected": "unmatched",
+        "matched": 0.0,
+        "review": 0.0,
+        "unmatched": 1.0,
+        "top_true": 0.0
+      },
+      "overpayment": {
+        "n": 25,
+        "expected": "review",
+        "matched": 0.0,
+        "review": 1.0,
+        "unmatched": 0.0,
+        "top_true": 1.0
+      },
+      "partial_with_ref": {
+        "n": 64,
+        "expected": "review",
+        "matched": 0.0,
+        "review": 1.0,
+        "unmatched": 0.0,
+        "top_true": 1.0
+      },
+      "ref_messy_format": {
+        "n": 113,
+        "expected": "matched",
+        "matched": 0.26548672566371684,
+        "review": 0.4690265486725664,
+        "unmatched": 0.26548672566371684,
+        "top_true": 0.9469026548672567
+      },
+      "ref_only_no_payer": {
+        "n": 84,
+        "expected": "matched",
+        "matched": 0.0,
+        "review": 1.0,
+        "unmatched": 0.0,
+        "top_true": 1.0
+      },
+      "remittance_only": {
+        "n": 102,
+        "expected": "matched",
+        "matched": 1.0,
+        "review": 0.0,
+        "unmatched": 0.0,
+        "top_true": 1.0
+      },
+      "split_payment": {
+        "n": 112,
+        "expected": "review",
+        "matched": 0.0,
+        "review": 1.0,
+        "unmatched": 0.0,
+        "top_true": 1.0
+      },
+      "tds_no_remittance": {
+        "n": 52,
+        "expected": "review",
+        "matched": 0.0,
+        "review": 1.0,
+        "unmatched": 0.0,
+        "top_true": 1.0
+      },
+      "tds_with_remittance": {
+        "n": 140,
+        "expected": "review",
+        "matched": 0.0,
+        "review": 1.0,
+        "unmatched": 0.0,
+        "top_true": 1.0
+      },
+      "unknown_payer": {
+        "n": 48,
+        "expected": "unmatched",
+        "matched": 0.0,
+        "review": 0.2916666666666667,
+        "unmatched": 0.7083333333333334,
+        "top_true": 0.0
+      },
+      "unknown_payer_amount_hit": {
+        "n": 19,
+        "expected": "unmatched",
+        "matched": 0.0,
+        "review": 0.47368421052631576,
+        "unmatched": 0.5263157894736842,
+        "top_true": 0.0
+      },
+      "wrong_ref": {
+        "n": 59,
+        "expected": "review",
+        "matched": 0.0,
+        "review": 0.6949152542372882,
+        "unmatched": 0.3050847457627119,
+        "top_true": 0.3220338983050847
+      }
+    },
+    "learned": {
+      "amount_discrepancy": {
+        "n": 42,
+        "expected": "review",
+        "matched": 0.0,
+        "review": 1.0,
+        "unmatched": 0.0,
+        "top_true": 1.0
+      },
+      "bank_charges": {
+        "n": 62,
+        "expected": "matched",
+        "matched": 1.0,
+        "review": 0.0,
+        "unmatched": 0.0,
+        "top_true": 1.0
+      },
+      "bulk_payment": {
+        "n": 43,
+        "expected": "review",
+        "matched": 0.0,
+        "review": 0.7906976744186046,
+        "unmatched": 0.20930232558139536,
+        "top_true": 0.5348837209302325
+      },
+      "bulk_with_remittance": {
+        "n": 31,
+        "expected": "review",
+        "matched": 0.0,
+        "review": 1.0,
+        "unmatched": 0.0,
+        "top_true": 1.0
+      },
+      "exact_ref": {
+        "n": 362,
+        "expected": "matched",
+        "matched": 1.0,
+        "review": 0.0,
+        "unmatched": 0.0,
+        "top_true": 1.0
+      },
+      "exact_ref_outstanding": {
+        "n": 58,
+        "expected": "matched",
+        "matched": 1.0,
+        "review": 0.0,
+        "unmatched": 0.0,
+        "top_true": 1.0
+      },
+      "lookalike_customer_noref": {
+        "n": 34,
+        "expected": "review",
+        "matched": 0.0,
+        "review": 1.0,
+        "unmatched": 0.0,
+        "top_true": 0.9411764705882353
+      },
+      "lookalike_customer_ref": {
+        "n": 22,
+        "expected": "matched",
+        "matched": 1.0,
+        "review": 0.0,
+        "unmatched": 0.0,
+        "top_true": 1.0
+      },
+      "name_amount_ambiguous": {
+        "n": 44,
+        "expected": "review",
+        "matched": 0.0,
+        "review": 1.0,
+        "unmatched": 0.0,
+        "top_true": 0.9318181818181818
+      },
+      "name_amount_unique": {
+        "n": 177,
+        "expected": "review",
+        "matched": 0.0,
+        "review": 1.0,
+        "unmatched": 0.0,
+        "top_true": 0.9943502824858758
+      },
+      "non_ar_credit": {
+        "n": 21,
+        "expected": "unmatched",
+        "matched": 0.0,
+        "review": 0.047619047619047616,
+        "unmatched": 0.9523809523809523,
+        "top_true": 0.0
+      },
+      "overpayment": {
+        "n": 25,
+        "expected": "review",
+        "matched": 0.0,
+        "review": 1.0,
+        "unmatched": 0.0,
+        "top_true": 1.0
+      },
+      "partial_with_ref": {
+        "n": 64,
+        "expected": "review",
+        "matched": 0.0,
+        "review": 1.0,
+        "unmatched": 0.0,
+        "top_true": 1.0
+      },
+      "ref_messy_format": {
+        "n": 113,
+        "expected": "matched",
+        "matched": 0.6194690265486725,
+        "review": 0.3805309734513274,
+        "unmatched": 0.0,
+        "top_true": 0.9469026548672567
+      },
+      "ref_only_no_payer": {
+        "n": 84,
+        "expected": "matched",
+        "matched": 1.0,
+        "review": 0.0,
+        "unmatched": 0.0,
+        "top_true": 1.0
+      },
+      "remittance_only": {
+        "n": 102,
+        "expected": "matched",
+        "matched": 1.0,
+        "review": 0.0,
+        "unmatched": 0.0,
+        "top_true": 1.0
+      },
+      "split_payment": {
+        "n": 112,
+        "expected": "review",
+        "matched": 0.0,
+        "review": 1.0,
+        "unmatched": 0.0,
+        "top_true": 1.0
+      },
+      "tds_no_remittance": {
+        "n": 52,
+        "expected": "review",
+        "matched": 0.0,
+        "review": 1.0,
+        "unmatched": 0.0,
+        "top_true": 1.0
+      },
+      "tds_with_remittance": {
+        "n": 140,
+        "expected": "review",
+        "matched": 0.0,
+        "review": 1.0,
+        "unmatched": 0.0,
+        "top_true": 1.0
+      },
+      "unknown_payer": {
+        "n": 48,
+        "expected": "unmatched",
+        "matched": 0.0,
+        "review": 0.3541666666666667,
+        "unmatched": 0.6458333333333334,
+        "top_true": 0.0
+      },
+      "unknown_payer_amount_hit": {
+        "n": 19,
+        "expected": "unmatched",
+        "matched": 0.0,
+        "review": 1.0,
+        "unmatched": 0.0,
+        "top_true": 0.0
+      },
+      "wrong_ref": {
+        "n": 59,
+        "expected": "review",
+        "matched": 0.0,
+        "review": 1.0,
+        "unmatched": 0.0,
+        "top_true": 0.9661016949152542
+      }
+    }
+  }
+}

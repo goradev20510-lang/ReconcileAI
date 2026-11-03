@@ -4,3 +4,21 @@ __pycache__/
 *.db-shm
 *.db-wal
 .DS_Store
+.venv/
+ReconcileAI/data/training/
+ReconcileAI/data/processed/
+ReconcileAI/data/uploads/
+.pytest_cache/
+
+# Claude Code
+.claude/
+.mcp.json
+
+# Editors / OS
+.vscode/
+.idea/
+*.log
+
+# Env / venv variants
+.env.*
+venv/

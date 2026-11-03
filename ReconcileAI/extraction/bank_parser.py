@@ -64,10 +64,14 @@ def read_bank_excel(filepath: str | Path, bank_name: str = "Unknown",
     # Try each sheet until we find one with financial headers
     xf = pd.ExcelFile(str(filepath))
     for sheet in xf.sheet_names:
-        df = xf.parse(sheet)
-        col_map = _resolve_columns(df)
-        if col_map["date"] or col_map["credit"] or col_map["narration"]:
-            return _parse_bank_df(df, bank_name, account_number)
+        raw = xf.parse(sheet, header=None)
+        # find the header row (statements often start with account metadata)
+        for i in range(min(len(raw), 30)):
+            cand = raw.iloc[i + 1:].copy()
+            cand.columns = [str(c).strip() for c in raw.iloc[i].tolist()]
+            col_map = _resolve_columns(cand)
+            if col_map["date"] and (col_map["credit"] or col_map["narration"]):
+                return _parse_bank_df(cand.reset_index(drop=True), bank_name, account_number)
     return []
 
 
@@ -76,8 +80,13 @@ def _detect_header_row(filepath: str | Path, ext: str) -> int:
     with open(str(filepath), "r", encoding="utf-8", errors="ignore") as f:
         for i, line in enumerate(f):
             lower = line.lower()
-            if any(kw in lower for kw in ["date", "narration", "amount", "credit", "debit"]):
+            # a header row names at least two columns (metadata lines like "Statement date: …" don't)
+            hits = sum(kw in lower for kw in ["date", "narration", "description", "particulars",
+                                              "amount", "credit", "debit", "balance", "utr"])
+            if hits >= 2 and "," in line or hits >= 3:
                 return i
+            if i > 50:
+                break
     return 0
 
 

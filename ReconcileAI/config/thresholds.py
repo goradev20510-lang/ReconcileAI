@@ -11,6 +11,9 @@ AUTO_MATCH_THRESHOLD:   float = 0.80   # Score at which a match is auto-approved
 REVIEW_THRESHOLD:       float = 0.50   # Score below which a case goes to human review
 # 0.50–0.80 → suggested match requiring human approval
 
+# If the top two candidates score within this margin, the case is ambiguous → review
+AMBIGUITY_MARGIN:       float = 0.10
+
 # ── Fuzzy matching ────────────────────────────────────────────────────────────
 CUSTOMER_NAME_FUZZY_MIN: int = 75      # Minimum RapidFuzz score (0–100)
 
@@ -50,3 +53,37 @@ SCORE_WEIGHTS: dict[str, float] = {
 # ── Partial payment ───────────────────────────────────────────────────────────
 # A payment is "partial" if it covers less than this share of the invoice
 PARTIAL_THRESHOLD: Decimal = Decimal("0.99")
+
+
+# ── Learned overrides ─────────────────────────────────────────────────────────
+# `python -m training.train_matcher` calibrates the scoring weights and decision
+# thresholds on labelled synthetic data and writes them to learned_params.json.
+# The hand-set values above are kept as defaults (and as the training baseline).
+# Set RECONCILE_USE_LEARNED_PARAMS=0 to ignore the learned file.
+import json as _json
+import os as _os
+from pathlib import Path as _Path
+
+DEFAULT_PARAMS: dict = {
+    "score_weights":           dict(SCORE_WEIGHTS),
+    "auto_match_threshold":    AUTO_MATCH_THRESHOLD,
+    "review_threshold":        REVIEW_THRESHOLD,
+    "ambiguity_margin":        AMBIGUITY_MARGIN,
+    "customer_name_fuzzy_min": CUSTOMER_NAME_FUZZY_MIN,
+}
+
+LEARNED_PARAMS_PATH = _Path(__file__).with_name("learned_params.json")
+LEARNED_PARAMS_ACTIVE: bool = False
+
+if _os.getenv("RECONCILE_USE_LEARNED_PARAMS", "1") != "0" and LEARNED_PARAMS_PATH.exists():
+    try:
+        _learned = _json.loads(LEARNED_PARAMS_PATH.read_text(encoding="utf-8"))["params"]
+        if set(_learned["score_weights"]) == set(SCORE_WEIGHTS):
+            SCORE_WEIGHTS           = {k: float(v) for k, v in _learned["score_weights"].items()}
+            AUTO_MATCH_THRESHOLD    = float(_learned["auto_match_threshold"])
+            REVIEW_THRESHOLD        = float(_learned["review_threshold"])
+            AMBIGUITY_MARGIN        = float(_learned["ambiguity_margin"])
+            CUSTOMER_NAME_FUZZY_MIN = int(_learned["customer_name_fuzzy_min"])
+            LEARNED_PARAMS_ACTIVE   = True
+    except (OSError, ValueError, KeyError, TypeError):
+        pass  # fall back to the hand-set defaults above

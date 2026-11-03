@@ -7,7 +7,7 @@ from __future__ import annotations
 import re
 from rapidfuzz import fuzz, process
 
-from config.thresholds import CUSTOMER_NAME_FUZZY_MIN
+import config.thresholds as _thresholds
 
 
 # Common Indian company suffixes to normalise before fuzzy matching
@@ -32,13 +32,15 @@ def normalize_customer_name(name: str) -> str:
 
 
 def fuzzy_match_customer(candidate_name: str, all_customers: list[dict],
-                          threshold: int = CUSTOMER_NAME_FUZZY_MIN) -> list[dict]:
+                          threshold: int | None = None) -> list[dict]:
     """
     Return customers whose normalised name is within fuzzy threshold of candidate_name.
     Each result includes the original customer dict plus a 'fuzzy_score' key.
     """
     if not candidate_name or not all_customers:
         return []
+    if threshold is None:
+        threshold = _thresholds.CUSTOMER_NAME_FUZZY_MIN
 
     norm_candidate = normalize_customer_name(candidate_name)
     customer_norms = {c["customer_id"]: normalize_customer_name(c["name"]) for c in all_customers}

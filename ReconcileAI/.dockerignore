@@ -1,7 +1,13 @@
 .env
 **/__pycache__
 *.pyc
+.venv
+.pytest_cache
 database/*.db
 database/*.db-shm
 database/*.db-wal
+data/training
+data/processed
+data/uploads
 .git
+tests

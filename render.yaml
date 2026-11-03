@@ -13,3 +13,9 @@ services:
         value: openrouter
       - key: OPENROUTER_API_KEY
         sync: false
+      - key: LLM_NARRATION_HINTS
+        value: "1"
+      - key: LLM_MATCH_EXPLANATIONS
+        value: "0"
+    # The free plan has no persistent disk: the SQLite database starts empty on
+    # every deploy/restart. Attach a Render disk and set DATABASE_PATH to keep data.

@@ -149,7 +149,7 @@ def generate_bank_transactions(invoices: list[dict]) -> tuple[list[dict], list[d
     t = _txn(f"NEFT/{variant.upper().replace(' ', '')}/PAYMENT", inv["total_amount"])
     txns.append(t)
     ground_truth.append({"transaction_id": t["transaction_id"], "invoice_id": inv["invoice_id"],
-                          "scenario": "name_variation", "expected_outcome": "matched"})
+                          "scenario": "name_variation", "expected_outcome": "review"})  # no invoice ref → human confirms
 
     # Scenario 3: Payment without invoice number (INV-003)
     inv = invoices[2]
@@ -392,16 +392,20 @@ Finance Team, {cust.get('name','')}
     return emails[:15]
 
 
-# ── Write Files ───────────────────────────────────────────────────────────────
+# ── Build / Write ─────────────────────────────────────────────────────────────
+
+def build_dataset(seed: int = 42):
+    """Return (customers, invoices, bank_transactions, ground_truth, emails) for a seed."""
+    random.seed(seed)
+    invoices = generate_invoices()
+    bank_txns, ground_truth = generate_bank_transactions(invoices)
+    emails = generate_payment_emails(bank_txns, invoices, ground_truth)
+    return CUSTOMERS, invoices, bank_txns, ground_truth, emails
+
 
 def write_dataset():
-    random.seed(42)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-    customers = CUSTOMERS
-    invoices  = generate_invoices()
-    bank_txns, ground_truth = generate_bank_transactions(invoices)
-    emails    = generate_payment_emails(bank_txns, invoices, ground_truth)
+    customers, invoices, bank_txns, ground_truth, emails = build_dataset(42)
 
     # Write customers JSON
     (OUTPUT_DIR / "customers.json").write_text(json.dumps(customers, indent=2), encoding="utf-8")

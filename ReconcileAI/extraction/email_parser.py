@@ -36,3 +36,22 @@ def parse_eml_file(filepath: str | Path) -> str:
 def parse_text_file(filepath: str | Path) -> str:
     """Read a plain .txt email file."""
     return Path(filepath).read_text(encoding="utf-8", errors="ignore")
+
+
+def parse_eml_bytes(raw: bytes) -> str:
+    """Extract subject, sender and plain-text body from raw .eml bytes (falls back to HTML text)."""
+    import re
+    from email import policy
+    msg = email.message_from_bytes(raw, policy=policy.default)
+    header = []
+    for h in ("From", "To", "Subject", "Date"):
+        if msg.get(h):
+            header.append(f"{h}: {msg.get(h)}")
+    body = msg.get_body(preferencelist=("plain", "html"))
+    text = ""
+    if body is not None:
+        text = body.get_content()
+        if body.get_content_type() == "text/html":
+            text = re.sub(r"<br\s*/?>|</p>", "\n", text, flags=re.IGNORECASE)
+            text = re.sub(r"<[^>]+>", " ", text)
+    return "\n".join(header) + "\n\n" + text.strip()

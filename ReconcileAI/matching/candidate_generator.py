@@ -14,42 +14,74 @@ from matching.fuzzy_match import match_customer_identity
 
 
 # ── Narration regex parser (no LLM needed) ───────────────────────────────────
-_INV_PATTERN = re.compile(
-    r"\b(INV[-_/]?\d{3,6})\b",
-    re.IGNORECASE,
-)
+_INV_PATTERN = re.compile(r"\bINV[\s\-_/#]?\d{3,6}\b", re.IGNORECASE)
+
+# Tokens that are payment-rail / bank boilerplate, never a payer name
+_MODE_TOKENS = {
+    "NEFT", "RTGS", "IMPS", "UPI", "BY TRANSFER", "BY", "TRANSFER", "TRF", "CLG", "CHQ", "CHEQUE",
+    "INB", "MOB", "ACH", "NACH", "ECS", "FT", "IFT", "INF", "BIL", "ONL", "NET", "CR", "CREDIT",
+}
+_GENERIC_WORDS = {
+    "PAYMENT", "PAYMENTS", "PYMT", "PMT", "PAY", "SETTLEMENT", "BULK", "AGAINST", "BILL", "BILLS",
+    "INVOICE", "INVOICES", "PART", "PART1", "PART2", "PART3", "MISC", "REF", "ADVANCE", "TOWARDS",
+    "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "SEPT", "OCT", "NOV", "DEC",
+    "JANUARY", "FEBRUARY", "MARCH", "APRIL", "JUNE", "JULY", "AUGUST", "SEPTEMBER", "OCTOBER",
+    "NOVEMBER", "DECEMBER", "FILLER",
+}
+
+
+def _looks_like_reference(token: str) -> bool:
+    """UTRs, IFSC codes, account numbers: mostly digits or BANK+digits."""
+    t = token.replace(" ", "")
+    digits = sum(c.isdigit() for c in t)
+    if digits >= max(4, len(t) / 2):
+        return True
+    return bool(re.fullmatch(r"[A-Z]{4}0[A-Z0-9]{6}", t.upper()))           # IFSC
+
 
 def _extract_from_narration(narration: str) -> tuple[list[str], str | None]:
     """
     Deterministically extract invoice references and a payer-name hint
-    from a raw bank narration string such as:
+    from a raw bank narration such as:
       'NEFT/XYZTECHNOLOGIES/INV-001/97200'
-      'RTGS/GLOBALTECH/PAYMENT'
+      'NEFT-HDFC0001234-APEX SOLUTIONS LTD-INV 0012'
+      'RTGS/HDFCR52024101500123/GLOBAL TRADE/PAYMENT'
+      'BY TRANSFER-IMPS-ORBIT LOG-INV/0045'
     Returns (invoice_refs, payer_hint)
     """
     if not narration:
         return [], None
 
-    # 1. Extract invoice references
-    refs = [m.group(0).upper() for m in _INV_PATTERN.finditer(narration)]
+    # 1. Invoice references (then blank them out so they can't be taken as a payer)
+    refs = []
+    for m in _INV_PATTERN.finditer(narration):
+        ref = re.sub(r"[\s_/#]", "-", m.group(0).upper())
+        if ref not in refs:
+            refs.append(ref)
+    rest = _INV_PATTERN.sub(" ", narration)
 
-    # 2. Extract payer name: text between first and second '/' (NEFT-style)
-    #    e.g. 'NEFT/GLOBALTECH/INV-026' → 'GLOBALTECH'
+    # 2. Payer: first segment that is not rail boilerplate, a reference or generic text
     payer_hint: str | None = None
-    parts = narration.split("/")
-    # Parts: [MODE, PAYER, REF?, ...] — payer is index 1 if len > 1
-    if len(parts) >= 2 and parts[1].strip():
-        candidate = parts[1].strip()
-        # Filter out obvious non-names (pure numbers, empty)
-        if candidate and not candidate.isdigit() and len(candidate) > 2:
-            payer_hint = candidate
+    for raw in re.split(r"[/|:\-]", rest):
+        tok = " ".join(raw.split()).strip(" .,")
+        up = tok.upper()
+        if not tok or up in _MODE_TOKENS or _looks_like_reference(tok):
+            continue
+        words = [w for w in re.split(r"\s+", up) if w and w not in _GENERIC_WORDS and not w.isdigit()]
+        if not words:
+            continue
+        if sum(c.isalpha() for c in "".join(words)) < 3:
+            continue
+        payer_hint = tok
+        break
 
     return refs, payer_hint
 
 
 def generate_candidate_invoices(transaction: dict,
                                  narration_hints: dict | None = None,
-                                 remittance: dict | None = None) -> list[dict]:
+                                 remittance: dict | None = None,
+                                 exclude_invoice_ids: set[str] | None = None) -> list[dict]:
     """
     Build a list of candidate invoices for a bank transaction.
 
@@ -57,7 +89,8 @@ def generate_candidate_invoices(transaction: dict,
     ----------
     transaction    : bank_transactions row
     narration_hints: output from llm_extractor.interpret_bank_narration
-    remittance     : remittance_records row (if found by UTR)
+    remittance     : remittance_records row (if found by UTR / amount)
+    exclude_invoice_ids: invoices a reviewer already rejected for this transaction
 
     Returns
     -------
@@ -68,8 +101,11 @@ def generate_candidate_invoices(transaction: dict,
 
     # ── Step 1: Collect all reference signals ────────────────────────────────
     invoice_refs: list[str] = []
+    ref_sources: dict[str, str] = {}
     payer_name: str | None  = None
+    payer_gstin: str | None = None
     tds_amount: float       = 0.0
+    tds_section: str | None = None
 
     if remittance:
         refs = remittance.get("invoice_references")
@@ -79,16 +115,24 @@ def generate_candidate_invoices(transaction: dict,
                 refs = _json.loads(refs)
             except Exception:
                 refs = [refs]
-        invoice_refs.extend(refs or [])
+        for r in refs or []:
+            if r and r not in invoice_refs:
+                invoice_refs.append(r)
+                ref_sources[r] = "remittance"
         payer_name = remittance.get("customer_name")
+        payer_gstin = remittance.get("customer_gstin")
         tds_amount = float(remittance.get("tds_amount") or 0)
+        tds_section = remittance.get("tds_section")
 
     # LLM narration hints (keys: invoice_references, likely_payer, tds_amount)
     if narration_hints:
         llm_refs = narration_hints.get("invoice_references") or []
         if isinstance(llm_refs, str):
             llm_refs = [llm_refs]
-        invoice_refs.extend(llm_refs)
+        for r in llm_refs:
+            if r and r not in invoice_refs:
+                invoice_refs.append(r)
+                ref_sources[r] = "llm_narration"
         if not payer_name:
             payer_name = narration_hints.get("likely_payer")
         if not tds_amount:
@@ -100,21 +144,26 @@ def generate_candidate_invoices(transaction: dict,
     for r in narr_refs:
         if r not in invoice_refs:
             invoice_refs.append(r)
+            ref_sources[r] = "narration"
     if not payer_name and narr_payer:
         payer_name = narr_payer
+    exclude = exclude_invoice_ids or set()
 
     # ── Step 2: Exact invoice-reference candidates ────────────────────────────
     exact_candidates: set[str] = set()
+    matched_ref_source: dict[str, str] = {}
     for ref in invoice_refs:
-        for inv in find_exact_invoice_match(ref, all_invoices):
+        numeric_ok = ref_sources.get(ref) in ("llm_narration", "remittance")
+        for inv in find_exact_invoice_match(ref, all_invoices, allow_numeric=numeric_ok):
             exact_candidates.add(inv["invoice_id"])
+            matched_ref_source.setdefault(inv["invoice_id"], ref_sources.get(ref, "narration"))
 
     # ── Step 3: Customer-based candidates ─────────────────────────────────────
     customer_candidates: dict[str, dict] = {}   # invoice_id → invoice
     customer_fuzzy_scores: dict[str, int] = {}  # invoice_id → fuzzy score
     customer_match_methods: dict[str, str] = {} # invoice_id → match method
-    if payer_name:
-        matched_customers = match_customer_identity(payer_name, None, all_customers)
+    if payer_name or payer_gstin:
+        matched_customers = match_customer_identity(payer_name, payer_gstin, all_customers)
         for mc in matched_customers:
             cid = mc["customer_id"]
             for inv in all_invoices:
@@ -147,9 +196,9 @@ def generate_candidate_invoices(transaction: dict,
     inv_map = {inv["invoice_id"]: inv for inv in all_invoices}
 
     candidates = []
-    for inv_id in all_candidate_ids:
+    for inv_id in sorted(all_candidate_ids):
         inv = inv_map.get(inv_id)
-        if not inv:
+        if not inv or inv_id in exclude:
             continue
         signals = {
             "invoice_ref_exact":  inv_id in exact_candidates,
@@ -160,6 +209,10 @@ def generate_candidate_invoices(transaction: dict,
             "effective_payment":  float(effective_payment),
             "fuzzy_score":        customer_fuzzy_scores.get(inv_id, 0),
             "match_method":       customer_match_methods.get(inv_id, "none"),
+            "ref_source":         matched_ref_source.get(inv_id),
+            "invoice_refs":       list(invoice_refs),
+            "payer_hint":         payer_name,
+            "tds_section":        tds_section,
         }
         candidates.append({"invoice": inv, "signals": signals})
 

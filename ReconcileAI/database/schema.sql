@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS invoices (
 -- ── Bank Transactions ─────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS bank_transactions (
     transaction_id   TEXT PRIMARY KEY,
-    utr              TEXT UNIQUE,
+    utr              TEXT,            -- not UNIQUE: a repeated UTR must be stored so it can be flagged
     narration        TEXT,
     credit_amount    REAL NOT NULL DEFAULT 0,
     debit_amount     REAL NOT NULL DEFAULT 0,
@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS bank_transactions (
     account_number   TEXT,
     currency         TEXT NOT NULL DEFAULT 'INR',
     status           TEXT NOT NULL DEFAULT 'unmatched',
-    -- unmatched | matched | review | duplicate
+    -- unmatched | matched | review | duplicate | excluded (debit / non-receivable)
     batch_id         TEXT,
     source_document_id TEXT,
     created_at       TEXT NOT NULL DEFAULT (datetime('now'))
@@ -86,6 +86,8 @@ CREATE TABLE IF NOT EXISTS remittance_records (
     invoice_references TEXT,        -- JSON array
     payment_amount     REAL,
     tds_amount         REAL DEFAULT 0,
+    tds_section        TEXT,           -- 194C | 194J | 194H | 194I | 194A
+    customer_gstin     TEXT,
     utr                TEXT,
     payment_date       TEXT,
     currency           TEXT DEFAULT 'INR',
@@ -170,3 +172,6 @@ CREATE INDEX IF NOT EXISTS idx_alloc_txn            ON payment_allocations(trans
 CREATE INDEX IF NOT EXISTS idx_alloc_invoice        ON payment_allocations(invoice_id);
 CREATE INDEX IF NOT EXISTS idx_audit_entity         ON audit_logs(entity_type, entity_id);
 CREATE INDEX IF NOT EXISTS idx_review_status        ON review_cases(status);
+CREATE INDEX IF NOT EXISTS idx_review_txn           ON review_cases(transaction_id);
+CREATE INDEX IF NOT EXISTS idx_remit_utr            ON remittance_records(utr);
+CREATE INDEX IF NOT EXISTS idx_setl_alloc           ON settlement_components(allocation_id);

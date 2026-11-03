@@ -1,36 +1,46 @@
 """
 ReconcileAI – Document Ingestion Orchestrator
 Handles upload, validation, classification and initial storage of all document types.
+
+Every ingest_* function returns {"success": bool, ...}. A file whose SHA-256
+was already ingested is rejected (scenario: the same statement uploaded twice).
 """
 from __future__ import annotations
 import hashlib
+import importlib.util
 import json
-import sys
-import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
 
-from config.settings import MAX_FILE_SIZE_BYTES, ALLOWED_EXTENSIONS
+from config.settings import MAX_FILE_SIZE_BYTES, ALLOWED_EXTENSIONS, UPLOADS_DIR
 from database.repositories import (
     insert_document, insert_transaction, insert_invoice, upsert_customer,
-    insert_remittance, insert_extraction, create_audit_log,
+    insert_remittance, insert_extraction, create_audit_log, get_document_by_hash,
+    invoice_exists, transaction_exists,
 )
 from extraction.bank_parser import read_bank_csv, read_bank_excel
-from extraction.invoice_parser import extract_pdf_text, extract_excel_invoices
+from extraction.invoice_parser import extract_pdf_bytes_text, extract_excel_invoices
 from extraction.document_classifier import classify_by_file_type, classify_document_by_text
+from extraction.rule_extractor import (
+    extract_invoice_rules, extract_remittance_rules, merge_extractions, parse_amount,
+)
 
 
 # ── File Validation ───────────────────────────────────────────────────────────
 
-def validate_file(filename: str, file_bytes: bytes) -> dict:
+def validate_file(filename: str, file_bytes: bytes, document_type: str | None = None) -> dict:
     """Validate file extension and size. Returns {"valid": bool, "reason": str}."""
+    if not file_bytes:
+        return {"valid": False, "reason": "File is empty"}
     if len(file_bytes) > MAX_FILE_SIZE_BYTES:
         return {"valid": False, "reason": f"File exceeds {MAX_FILE_SIZE_BYTES // 1024 // 1024} MB limit"}
     ext = Path(filename).suffix.lower()
-    allowed = set().union(*ALLOWED_EXTENSIONS.values())
+    allowed = ALLOWED_EXTENSIONS.get(document_type) if document_type else set().union(*ALLOWED_EXTENSIONS.values())
     if ext not in allowed:
-        return {"valid": False, "reason": f"File type '{ext}' is not supported"}
+        return {"valid": False, "reason": f"File type '{ext}' is not supported for {document_type or 'upload'} "
+                                          f"(allowed: {', '.join(sorted(allowed))})"}
     return {"valid": True, "reason": ""}
 
 
@@ -38,261 +48,364 @@ def calculate_document_hash(file_bytes: bytes) -> str:
     return hashlib.sha256(file_bytes).hexdigest()
 
 
+def _precheck(filename: str, file_bytes: bytes, document_type: str, allow_duplicate: bool) -> dict | None:
+    v = validate_file(filename, file_bytes, document_type)
+    if not v["valid"]:
+        return {"success": False, "reason": v["reason"]}
+    existing = get_document_by_hash(calculate_document_hash(file_bytes))
+    if existing and not allow_duplicate:
+        return {"success": False, "duplicate_file": True, "document_id": existing["document_id"],
+                "reason": f"This file was already uploaded as '{existing['filename']}' "
+                          f"on {existing['upload_time']} — nothing imported."}
+    return None
+
+
+def _with_tempfile(file_bytes: bytes, suffix: str, fn):
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(file_bytes)
+        path = tmp.name
+    try:
+        return fn(path)
+    finally:
+        Path(path).unlink(missing_ok=True)
+
+
 # ── Bank Statement Ingestion ──────────────────────────────────────────────────
 
-def ingest_bank_statement(filename: str, file_bytes: bytes,
-                           bank_name: str = "Unknown", batch_id: str | None = None) -> dict:
+def ingest_bank_statement(filename: str, file_bytes: bytes, bank_name: str = "Unknown",
+                          batch_id: str | None = None, account_number: str | None = None,
+                          allow_duplicate: bool = False) -> dict:
     """Parse and store a bank statement. Returns summary dict."""
-    validation = validate_file(filename, file_bytes)
-    if not validation["valid"]:
-        return {"success": False, "reason": validation["reason"]}
+    err = _precheck(filename, file_bytes, "bank_statement", allow_duplicate)
+    if err:
+        return err
 
-    file_hash = calculate_document_hash(file_bytes)
     ext = Path(filename).suffix.lower()
-
-    # Save to temp file for parsing
-    with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
-        tmp.write(file_bytes)
-        tmp_path = tmp.name
-
     try:
-        if ext == ".csv":
-            transactions = read_bank_csv(tmp_path, bank_name=bank_name)
-        else:
-            transactions = read_bank_excel(tmp_path, bank_name=bank_name)
-    finally:
-        Path(tmp_path).unlink(missing_ok=True)
+        reader = read_bank_csv if ext == ".csv" else read_bank_excel
+        transactions = _with_tempfile(file_bytes, ext,
+                                      lambda p: reader(p, bank_name=bank_name, account_number=account_number))
+    except Exception as e:
+        return {"success": False, "reason": f"Could not parse bank statement: {e}"}
+    if not transactions:
+        return {"success": False, "reason": "No transactions found — check the file has Date / Narration / "
+                                            "Credit columns."}
 
-    # Store document record
-    doc_id = insert_document({
-        "filename":      filename,
-        "document_type": "bank_statement",
-        "file_hash":     file_hash,
-        "batch_id":      batch_id,
-    })
-
-    # Store transactions
-    imported = 0
+    doc_id = insert_document({"filename": filename, "document_type": "bank_statement",
+                              "file_hash": calculate_document_hash(file_bytes), "batch_id": batch_id})
+    imported = already = debits = 0
     for txn in transactions:
+        if transaction_exists(txn["transaction_id"]):
+            already += 1          # same line seen in an overlapping statement
+            continue
         txn["source_document_id"] = doc_id
         txn["batch_id"] = batch_id
         insert_transaction(txn)
         imported += 1
-        create_audit_log("transaction", txn["transaction_id"], "imported",
-                         details={"source": filename})
+        if float(txn.get("credit_amount") or 0) <= 0:
+            debits += 1
+        create_audit_log("transaction", txn["transaction_id"], "imported", details={"source": filename})
 
-    return {"success": True, "document_id": doc_id, "transactions_imported": imported}
+    create_audit_log("document", doc_id, "bank_statement_ingested",
+                     details={"filename": filename, "imported": imported, "already_present": already,
+                              "debits_excluded": debits})
+    return {"success": True, "document_id": doc_id, "transactions_imported": imported,
+            "credits_imported": imported - debits, "debits_excluded": debits, "already_present": already}
 
 
 # ── Invoice Ingestion ─────────────────────────────────────────────────────────
 
-def ingest_invoice(filename: str, file_bytes: bytes, batch_id: str | None = None) -> dict:
-    """Parse a PDF or Excel invoice and store extracted data."""
-    validation = validate_file(filename, file_bytes)
-    if not validation["valid"]:
-        return {"success": False, "reason": validation["reason"]}
+def ingest_invoice(filename: str, file_bytes: bytes, batch_id: str | None = None,
+                   allow_duplicate: bool = False) -> dict:
+    """Parse a PDF, Excel or CSV invoice file and store extracted invoices."""
+    err = _precheck(filename, file_bytes, "invoice", allow_duplicate)
+    if err:
+        return err
 
-    file_hash = calculate_document_hash(file_bytes)
     ext = Path(filename).suffix.lower()
-
-    with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
-        tmp.write(file_bytes)
-        tmp_path = tmp.name
-
-    doc_id = insert_document({
-        "filename":      filename,
-        "document_type": "invoice",
-        "file_hash":     file_hash,
-        "batch_id":      batch_id,
-    })
-
+    doc_id = insert_document({"filename": filename, "document_type": "invoice",
+                              "file_hash": calculate_document_hash(file_bytes), "batch_id": batch_id})
+    warnings: list[str] = []
     try:
         if ext == ".pdf":
-            text = extract_pdf_text(tmp_path)
-            extracted = _llm_extract_invoice(text, doc_id)
+            text = extract_pdf_bytes_text(file_bytes)
+            if not text.strip():
+                return {"success": False, "document_id": doc_id,
+                        "reason": "No text could be read from the PDF (scanned image without OCR?)."}
+            extracted = extract_invoice_from_text(text, doc_id)
             invoices_data = [extracted] if extracted else []
+            if extracted and extracted.get("missing_fields"):
+                warnings.append(f"Missing fields: {', '.join(extracted['missing_fields'])}")
         else:
-            raw_rows = extract_excel_invoices(tmp_path)
+            raw_rows = _with_tempfile(file_bytes, ext, extract_excel_invoices)
             invoices_data = [_map_excel_invoice_row(r) for r in raw_rows]
-    finally:
-        Path(tmp_path).unlink(missing_ok=True)
+            insert_extraction({"document_id": doc_id, "extractor": "tabular_parser",
+                               "raw_output": json.dumps(raw_rows[:200], default=str),
+                               "validated_output": json.dumps(invoices_data[:200], default=str),
+                               "extraction_status": "complete"})
+    except Exception as e:
+        return {"success": False, "document_id": doc_id, "reason": f"Could not parse invoice file: {e}"}
 
-    stored_ids = []
-    for inv_data in invoices_data:
-        if not inv_data.get("invoice_id"):
+    stored_ids, skipped = [], []
+    for inv in invoices_data:
+        if not inv.get("invoice_id") or not inv.get("total_amount"):
+            skipped.append(inv.get("invoice_id") or "(no invoice number)")
             continue
-        # Upsert customer
-        cust_id = upsert_customer(
-            name=inv_data.get("customer_name", "Unknown"),
-            gstin=inv_data.get("customer_gstin"),
-        )
-        inv_data["customer_id"]       = cust_id
-        inv_data["source_document_id"] = doc_id
-        iid = insert_invoice(inv_data)
+        inv["invoice_id"] = str(inv["invoice_id"]).strip()
+        if invoice_exists(inv["invoice_id"]):
+            skipped.append(f"{inv['invoice_id']} (already exists)")
+            continue
+        inv["customer_id"] = upsert_customer(name=inv.get("customer_name") or "Unknown",
+                                             gstin=inv.get("customer_gstin"))
+        inv["source_document_id"] = doc_id
+        iid = insert_invoice(inv)
         stored_ids.append(iid)
         create_audit_log("invoice", iid, "imported", details={"source": filename})
 
-    return {"success": True, "document_id": doc_id, "invoices_imported": len(stored_ids),
-            "invoice_ids": stored_ids}
+    if skipped:
+        warnings.append(f"Skipped {len(skipped)}: {', '.join(skipped[:10])}{'…' if len(skipped) > 10 else ''}")
+    return {"success": bool(stored_ids), "document_id": doc_id,
+            "invoices_imported": len(stored_ids), "invoice_ids": stored_ids,
+            "skipped": skipped, "warnings": warnings,
+            **({} if stored_ids else {"reason": "; ".join(warnings) or "No invoices found in file."})}
 
 
-def _llm_extract_invoice(text: str, doc_id: str) -> dict | None:
-    """Call LLM extractor and store the extraction result."""
-    try:
-        from extraction.llm_extractor import extract_invoice_data
-        result = extract_invoice_data(text)
-        insert_extraction({
-            "document_id":      doc_id,
-            "extractor":        "llm",
-            "raw_output":       json.dumps(result),
-            "validated_output": json.dumps(result),
-            "extraction_status": result.get("extraction_status", "complete"),
-            "missing_fields":   result.get("missing_fields", []),
-        })
-        return result
-    except Exception as e:
-        insert_extraction({
-            "document_id": doc_id, "extractor": "llm",
-            "extraction_status": "failed", "raw_output": str(e),
-        })
-        return None
+def extract_invoice_from_text(text: str, doc_id: str | None = None) -> dict | None:
+    """LLM extraction when available, always backed by the rule-based extractor."""
+    from extraction.llm_extractor import extract_invoice_data, llm_available
+    rules = extract_invoice_rules(text)
+    result, extractor, raw = rules, "rules", json.dumps(rules)
+    if llm_available():
+        try:
+            llm = extract_invoice_data(text)
+            result, extractor, raw = merge_extractions(llm, rules), "llm+rules", json.dumps(llm)
+            result["missing_fields"] = [k for k in ("invoice_id", "customer_name", "total_amount")
+                                        if not result.get(k)]
+            result["extraction_status"] = "partial" if result["missing_fields"] else "complete"
+        except Exception as e:
+            raw = json.dumps({"llm_error": str(e), "rules": rules})
+    if doc_id:
+        insert_extraction({"document_id": doc_id, "extractor": extractor, "raw_output": raw,
+                           "validated_output": json.dumps(result, default=str),
+                           "extraction_status": result.get("extraction_status", "complete"),
+                           "missing_fields": result.get("missing_fields", [])})
+    return result if result.get("invoice_id") else None
 
 
 def _map_excel_invoice_row(row: dict) -> dict:
-    """Map raw Excel row keys to our standard invoice schema."""
+    """Map raw Excel/CSV row keys (lower-cased, spaces) to our invoice schema."""
     def _get(*keys):
         for k in keys:
-            if k in row and row[k] is not None:
+            if row.get(k) not in (None, ""):
                 return row[k]
         return None
 
     def _float(v):
+        if v is None:
+            return None
+        return parse_amount(str(v).replace("₹", "").replace("INR", "").replace("Rs.", ""))
+
+    def _date(v):
+        if not v:
+            return None
         try:
-            return float(str(v).replace(",", "").replace("₹", ""))
+            from dateutil import parser as dp
+            return dp.parse(str(v), dayfirst=not re.match(r"\d{4}-", str(v))).date().isoformat()
         except Exception:
-            return 0.0
+            return None
+
+    total = _float(_get("total amount", "total", "invoice total", "grand total", "invoice amount", "amount"))
+    taxable = _float(_get("taxable amount", "taxable value", "taxable", "base amount", "subtotal"))
+    gst = _float(_get("gst amount", "gst", "tax amount", "tax"))
+    if total is None and taxable is not None:
+        total = round(taxable + (gst or 0), 2)
+    outstanding = _float(_get("outstanding amount", "outstanding", "balance due", "amount due", "balance"))
+    status = "open"
+    if outstanding is not None and total and outstanding < total - 0.01:
+        status = "settled" if outstanding <= 0.01 else "partially_paid"
 
     return {
-        "invoice_id":       _get("invoice_id", "invoice no", "invoice number", "inv_id"),
-        "supplier_name":    _get("supplier_name", "supplier", "from"),
-        "customer_name":    _get("customer_name", "customer", "bill to", "billed to"),
-        "customer_gstin":   _get("customer_gstin", "gstin", "gst number"),
-        "invoice_date":     _get("invoice_date", "date", "invoice date"),
-        "due_date":         _get("due_date", "payment due"),
-        "taxable_amount":   _float(_get("taxable_amount", "taxable", "base amount") or 0),
-        "gst_amount":       _float(_get("gst_amount", "gst", "tax amount") or 0),
-        "total_amount":     _float(_get("total_amount", "total", "amount") or 0),
-        "currency":         _get("currency") or "INR",
-        "status":           "open",
+        "invoice_id":         _get("invoice id", "invoice no", "invoice no.", "invoice number", "inv id", "inv no", "bill no"),
+        "supplier_name":      _get("supplier name", "supplier", "from", "seller"),
+        "customer_name":      _get("customer name", "customer", "bill to", "billed to", "buyer", "party name"),
+        "customer_gstin":     _get("customer gstin", "gstin", "gst number", "buyer gstin"),
+        "invoice_date":       _date(_get("invoice date", "date", "bill date")),
+        "due_date":           _date(_get("due date", "payment due", "due")),
+        "taxable_amount":     taxable or 0.0,
+        "gst_amount":         gst or 0.0,
+        "total_amount":       total or 0.0,
+        "outstanding_amount": outstanding if outstanding is not None else total,
+        "currency":           _get("currency") or "INR",
+        "status":             status,
     }
 
 
 # ── Remittance Email Ingestion ────────────────────────────────────────────────
 
-def ingest_remittance(filename: str, file_bytes: bytes, batch_id: str | None = None) -> dict:
-    """Parse a payment email and store extracted remittance data."""
-    validation = validate_file(filename, file_bytes)
-    if not validation["valid"]:
-        return {"success": False, "reason": validation["reason"]}
+def remittance_text(filename: str, file_bytes: bytes) -> str:
+    ext = Path(filename).suffix.lower()
+    if ext == ".eml":
+        from extraction.email_parser import parse_eml_bytes
+        return parse_eml_bytes(file_bytes)
+    if ext == ".pdf":
+        return extract_pdf_bytes_text(file_bytes)
+    return file_bytes.decode("utf-8", errors="ignore")
 
-    file_hash = calculate_document_hash(file_bytes)
-    text = file_bytes.decode("utf-8", errors="ignore")
 
-    doc_id = insert_document({
-        "filename":      filename,
-        "document_type": "remittance",
-        "file_hash":     file_hash,
-        "batch_id":      batch_id,
-    })
+def extract_remittance(text: str) -> tuple[dict, str, str]:
+    """Return (result, extractor_name, raw_output)."""
+    from extraction.llm_extractor import extract_remittance_data, llm_available
+    rules = extract_remittance_rules(text)
+    if llm_available():
+        try:
+            llm = extract_remittance_data(text)
+            return merge_extractions(llm, rules), "llm+rules", json.dumps(llm, default=str)
+        except Exception as e:
+            return rules, "rules", json.dumps({"llm_error": str(e), "rules": rules}, default=str)
+    return rules, "rules", json.dumps(rules, default=str)
 
+
+def ingest_remittance(filename: str, file_bytes: bytes, batch_id: str | None = None,
+                      allow_duplicate: bool = False) -> dict:
+    """Parse a payment email / remittance advice and store the extracted remittance."""
+    err = _precheck(filename, file_bytes, "remittance", allow_duplicate)
+    if err:
+        return err
+
+    text = remittance_text(filename, file_bytes)
+    if not text.strip():
+        return {"success": False, "reason": "No readable text in file."}
+    doc_id = insert_document({"filename": filename, "document_type": "remittance",
+                              "file_hash": calculate_document_hash(file_bytes), "batch_id": batch_id})
     try:
-        from extraction.llm_extractor import extract_remittance_data
-        result = extract_remittance_data(text)
-        insert_extraction({
-            "document_id":      doc_id,
-            "extractor":        "llm",
-            "raw_output":       json.dumps(result),
-            "validated_output": json.dumps(result),
-            "extraction_status": "complete",
-        })
-        rid = insert_remittance({**result, "document_id": doc_id})
-        create_audit_log("remittance", rid, "imported", details={"source": filename})
-        return {"success": True, "document_id": doc_id, "remittance_id": rid, "extracted": result}
+        result, extractor, raw = extract_remittance(text)
     except Exception as e:
-        return {"success": False, "document_id": doc_id, "reason": str(e)}
+        return {"success": False, "document_id": doc_id, "reason": f"Extraction failed: {e}"}
+
+    if not (result.get("payment_amount") or result.get("invoice_references") or result.get("utr")):
+        insert_extraction({"document_id": doc_id, "extractor": extractor, "raw_output": raw,
+                           "extraction_status": "failed"})
+        return {"success": False, "document_id": doc_id, "extracted": result,
+                "reason": "No payment amount, invoice reference or UTR found — is this a remittance advice?"}
+
+    insert_extraction({"document_id": doc_id, "extractor": extractor, "raw_output": raw,
+                       "validated_output": json.dumps(result, default=str), "extraction_status": "complete"})
+    rid = insert_remittance({**result, "document_id": doc_id})
+    create_audit_log("remittance", rid, "imported",
+                     details={"source": filename, "extractor": extractor, "utr": result.get("utr"),
+                              "invoice_references": result.get("invoice_references")})
+    return {"success": True, "document_id": doc_id, "remittance_id": rid, "extracted": result,
+            "extractor": extractor}
+
+
+# ── TDS certificate storage ───────────────────────────────────────────────────
+
+def store_supporting_document(filename: str, file_bytes: bytes, document_type: str = "tds_certificate") -> dict:
+    """Persist a supporting document (e.g. Form 16A) and register it. Returns {"document_id", "path"}."""
+    v = validate_file(filename, file_bytes, document_type)
+    if not v["valid"]:
+        return {"success": False, "reason": v["reason"]}
+    file_hash = calculate_document_hash(file_bytes)
+    existing = get_document_by_hash(file_hash)
+    if existing:
+        return {"success": True, "document_id": existing["document_id"], "path": existing.get("file_path")}
+    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", Path(filename).name)
+    path = UPLOADS_DIR / f"{file_hash[:12]}_{safe}"
+    path.write_bytes(file_bytes)
+    doc_id = insert_document({"filename": filename, "document_type": document_type,
+                              "file_hash": file_hash, "file_path": str(path)})
+    return {"success": True, "document_id": doc_id, "path": str(path)}
+
+
+# ── Auto-detect upload ────────────────────────────────────────────────────────
+
+def detect_document_type(filename: str, file_bytes: bytes) -> dict:
+    """Classify a file by structure (tabular) or text keywords. Returns {"document_type", "confidence"}."""
+    ext = Path(filename).suffix.lower()
+    if ext in (".csv", ".xlsx", ".xls"):
+        res = _with_tempfile(file_bytes, ext, classify_by_file_type)
+        return res or {"document_type": "unknown", "confidence": 0.0}
+    if ext == ".eml":
+        return {"document_type": "remittance", "confidence": 0.95}
+    text = extract_pdf_bytes_text(file_bytes) if ext == ".pdf" else file_bytes.decode("utf-8", errors="ignore")
+    return classify_document_by_text(text)
+
+
+def auto_ingest(filename: str, file_bytes: bytes, bank_name: str = "Unknown") -> dict:
+    """Detect the document type and route to the right importer."""
+    kind = detect_document_type(filename, file_bytes)
+    dtype = kind["document_type"]
+    if dtype == "bank_statement":
+        res = ingest_bank_statement(filename, file_bytes, bank_name=bank_name)
+    elif dtype == "invoice":
+        res = ingest_invoice(filename, file_bytes)
+    elif dtype == "remittance":
+        res = ingest_remittance(filename, file_bytes)
+    else:
+        res = {"success": False, "reason": "Could not tell what kind of document this is — "
+                                           "use the specific tab instead."}
+    return {**res, "detected_type": dtype, "detection_confidence": kind.get("confidence", 0.0)}
 
 
 # ── Synthetic Dataset Loader ──────────────────────────────────────────────────
 
-def load_synthetic_dataset() -> dict:
-    """Load the pre-generated synthetic dataset directly into the database."""
-    import sys, importlib
-    # Ensure the project root is on sys.path so 'data' resolves correctly
-    project_root = str(Path(__file__).parent.parent)
-    if project_root not in sys.path:
-        sys.path.insert(0, project_root)
+DEMO_MARKER_HASH = "synthetic-demo-dataset-v2"
 
-    import random
-    # Import via importlib to avoid stdlib 'data' name clash
+
+def demo_dataset_loaded() -> bool:
+    return bool(get_document_by_hash(DEMO_MARKER_HASH))
+
+
+def load_synthetic_dataset() -> dict:
+    """Load the synthetic demo dataset directly into the database (idempotent)."""
+    if demo_dataset_loaded():
+        return {"already_loaded": True, "customers": 0, "invoices": 0, "transactions": 0,
+                "emails": 0, "remittances_stored": 0, "ground_truth": []}
+
+    # Import via file path to avoid any clash with a stdlib/third-party 'data' package
     spec = importlib.util.spec_from_file_location(
-        "generate_dataset",
-        Path(__file__).parent.parent / "data" / "synthetic" / "generate_dataset.py"
-    )
+        "generate_dataset", Path(__file__).parent.parent / "data" / "synthetic" / "generate_dataset.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+    customers, invoices, bank_txns, ground_truth, emails = mod.build_dataset(seed=42)
 
-    random.seed(42)
-    customers = mod.CUSTOMERS
-    invoices  = mod.generate_invoices()
-    bank_txns, ground_truth = mod.generate_bank_transactions(invoices)
-    emails    = mod.generate_payment_emails(bank_txns, invoices, ground_truth)
+    marker = insert_document({"filename": "Demo dataset (synthetic)", "document_type": "demo",
+                              "file_hash": DEMO_MARKER_HASH})
 
-    # Load customers
     for cust in customers:
-        upsert_customer(name=cust["name"], gstin=cust.get("gstin"),
-                        variants=cust.get("variants", []))
+        upsert_customer(name=cust["name"], gstin=cust.get("gstin"), variants=cust.get("variants", []))
 
-    # Load invoices
     for inv in invoices:
-        cust_id = upsert_customer(inv["customer_name"], gstin=inv.get("customer_gstin"))
-        inv["customer_id"] = cust_id
+        inv = dict(inv)
+        inv["customer_id"] = upsert_customer(inv["customer_name"], gstin=inv.get("customer_gstin"))
+        inv["source_document_id"] = marker
         insert_invoice(inv)
 
-    # Load bank transactions
     for txn in bank_txns:
-        insert_transaction(txn)
+        insert_transaction({**txn, "source_document_id": marker})
 
-    # Load remittances from emails (parse inline — no LLM needed for synthetic data)
+    # Remittance emails: parse with the rule-based extractor (no LLM call needed for demo data)
     rem_count = 0
-    for email in emails:
-        content = email["content"]
-        utr = email.get("utr")
-        if utr:
-            # Basic pattern extraction for synthetic emails (no LLM call needed)
-            import re
-            inv_refs = re.findall(r"INV-\d+", content)
-            amount_m = re.search(r"₹([\d,]+(?:\.\d+)?)", content)
-            tds_m    = re.search(r"TDS of ₹([\d,]+(?:\.\d+)?)", content)
-            amount   = float(amount_m.group(1).replace(",","")) if amount_m else 0.0
-            tds      = float(tds_m.group(1).replace(",","")) if tds_m else 0.0
-
-            insert_remittance({
-                "customer_name":       None,
-                "invoice_references":  inv_refs,
-                "payment_amount":      amount,
-                "tds_amount":          tds,
-                "utr":                 utr,
-                "payment_date":        None,
-                "currency":            "INR",
-                "evidence":            [content[:200]],
-            })
-            rem_count += 1
+    for em in emails:
+        content = em["content"]
+        doc_id = insert_document({"filename": em["filename"], "document_type": "remittance",
+                                  "file_hash": calculate_document_hash(content.encode("utf-8"))})
+        result = extract_remittance_rules(content)
+        result["utr"] = result.get("utr") or em.get("utr")
+        insert_extraction({"document_id": doc_id, "extractor": "rules",
+                           "raw_output": json.dumps(result, default=str),
+                           "validated_output": json.dumps(result, default=str),
+                           "extraction_status": "complete"})
+        insert_remittance({**result, "document_id": doc_id})
+        rem_count += 1
 
     create_audit_log("system", "dataset", "synthetic_dataset_loaded",
                      details={"customers": len(customers), "invoices": len(invoices),
-                               "transactions": len(bank_txns), "emails": len(emails)})
+                              "transactions": len(bank_txns), "emails": len(emails)})
 
     return {
+        "already_loaded": False,
         "customers": len(customers), "invoices": len(invoices),
         "transactions": len(bank_txns), "emails": len(emails),
         "remittances_stored": rem_count,

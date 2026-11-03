@@ -76,11 +76,22 @@ def classify_by_file_type(filepath: str | Path) -> dict | None:
 def _classify_tabular(p: Path, ext: str) -> dict:
     import pandas as pd
     if ext == ".csv":
-        df = pd.read_csv(str(p), nrows=3)
+        # skip bank metadata lines above the real header row
+        from extraction.bank_parser import _detect_header_row
+        df = pd.read_csv(str(p), nrows=3, skiprows=_detect_header_row(p, ext))
+        cols_lower = " ".join(str(c).lower() for c in df.columns)
     else:
-        df = pd.read_excel(str(p), nrows=3)
-
-    cols_lower = " ".join(str(c).lower() for c in df.columns)
+        xf = pd.ExcelFile(str(p))
+        cols_lower = ""
+        for sheet in xf.sheet_names:
+            raw = xf.parse(sheet, header=None, nrows=15)
+            for _, row in raw.iterrows():                 # first row that looks like a header
+                line = " ".join(str(v).lower() for v in row.tolist() if pd.notna(v))
+                if any(k in line for k in ("narration", "invoice", "credit", "description")):
+                    cols_lower = line
+                    break
+            if cols_lower:
+                break
     bank_signals = sum(1 for kw in ["narration", "balance", "credit", "debit", "utr"] if kw in cols_lower)
     inv_signals  = sum(1 for kw in ["invoice", "gstin", "taxable", "gst"] if kw in cols_lower)
 

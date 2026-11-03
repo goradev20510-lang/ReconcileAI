@@ -10,17 +10,39 @@ from pathlib import Path
 from typing import Any
 
 from config.settings import (
-    LLM_PROVIDER, LLM_MODEL,
+    LLM_PROVIDER, LLM_MODEL, LLM_ENABLED, LLM_TIMEOUT_SECONDS,
     OPENAI_API_KEY, OPENROUTER_API_KEY, OPENROUTER_BASE_URL, GEMINI_API_KEY,
 )
 
 _PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 
 
+class LLMUnavailable(RuntimeError):
+    """Raised when no LLM provider is configured (callers fall back to rules)."""
+
+
+def llm_available() -> bool:
+    """True when the LLM is enabled and the configured provider has an API key."""
+    if not LLM_ENABLED:
+        return False
+    key = {"openrouter": OPENROUTER_API_KEY, "gemini": GEMINI_API_KEY}.get(LLM_PROVIDER, OPENAI_API_KEY)
+    return bool(key)
+
+
+def llm_status() -> str:
+    if not LLM_ENABLED:
+        return "disabled (LLM_ENABLED=0) — rule-based extraction"
+    if not llm_available():
+        return f"no API key for '{LLM_PROVIDER}' — rule-based extraction"
+    return f"{LLM_PROVIDER} · {LLM_MODEL}"
+
+
 # ── Low-level LLM call ────────────────────────────────────────────────────────
 
 def _call_llm(system_prompt: str, user_content: str, temperature: float = 0.0) -> str:
     """Send a request to the configured provider and return the raw text response."""
+    if not llm_available():
+        raise LLMUnavailable(llm_status())
     if LLM_PROVIDER == "openrouter":
         return _call_openai_compat(
             base_url=OPENROUTER_BASE_URL,
@@ -46,7 +68,7 @@ def _call_llm(system_prompt: str, user_content: str, temperature: float = 0.0) -
 def _call_openai_compat(base_url: str, api_key: str | None,
                          model: str, system: str, user: str, temperature: float) -> str:
     if not api_key:
-        raise RuntimeError("No API key configured. Set your key in .env and restart.")
+        raise LLMUnavailable("No API key configured. Set your key in .env and restart.")
     try:
         import httpx
         from openai import OpenAI
@@ -63,7 +85,7 @@ def _call_openai_compat(base_url: str, api_key: str | None,
             api_key=api_key,
             base_url=base_url,
             default_headers=extra_headers,
-            timeout=60.0,
+            timeout=LLM_TIMEOUT_SECONDS,
         )
         resp = client.chat.completions.create(
             model=model,
@@ -81,15 +103,14 @@ def _call_openai_compat(base_url: str, api_key: str | None,
 
 def _call_gemini(system_prompt: str, user_content: str) -> str:
     """Call Google Gemini via the openai-compatible REST API."""
-    import httpx, json as _json
-    headers = {"Content-Type": "application/json"}
-    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-           f"{LLM_MODEL}:generateContent?key={GEMINI_API_KEY}")
+    import httpx
+    headers = {"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY or ""}
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{LLM_MODEL}:generateContent"
     body = {
         "contents": [{"parts": [{"text": f"{system_prompt}\n\n{user_content}"}]}],
         "generationConfig": {"temperature": 0.0, "maxOutputTokens": 1024},
     }
-    r = httpx.post(url, json=body, headers=headers, timeout=30)
+    r = httpx.post(url, json=body, headers=headers, timeout=LLM_TIMEOUT_SECONDS)
     r.raise_for_status()
     data = r.json()
     return data["candidates"][0]["content"]["parts"][0]["text"]
@@ -157,8 +178,11 @@ def extract_remittance_data(email_text: str) -> dict[str, Any]:
             except (ValueError, TypeError):
                 result[field] = 0.0 if field == "tds_amount" else None
 
-    result.setdefault("tds_amount", 0.0)
-    result.setdefault("invoice_references", [])
+    result["tds_amount"] = result.get("tds_amount") or 0.0
+    refs = result.get("invoice_references") or []
+    result["invoice_references"] = [refs] if isinstance(refs, str) else list(refs)
+    sec = (result.get("tds_section") or "").upper().replace("SECTION", "").strip() or None
+    result["tds_section"] = sec
     result.setdefault("evidence", [])
     return result
 
@@ -174,6 +198,11 @@ def interpret_bank_narration(narration: str, amount: float,
     raw    = _call_llm(system, user)
     result = _extract_json(raw)
     result.setdefault("ambiguities", [])
+    # Map the prompt's field names onto the keys the candidate generator reads.
+    ref = result.get("invoice_reference_candidate")
+    result["invoice_references"] = [ref] if isinstance(ref, str) and ref.strip() else []
+    result["likely_payer"] = result.get("payer_name_candidate")
+    result.setdefault("tds_amount", 0.0)
     return result
 
 

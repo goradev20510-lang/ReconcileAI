@@ -48,7 +48,8 @@ def validate_payment_amount(credit_amount: float, tds_amount: float,
 
 def validate_tds_claim(tds_amount: float, invoice_total: float,
                         tds_section: str | None = None,
-                        has_tds_certificate: bool = False) -> dict:
+                        has_tds_certificate: bool = False,
+                        taxable_amount: float | None = None) -> dict:
     """
     Validate a TDS claim against configured rates.
 
@@ -71,12 +72,21 @@ def validate_tds_claim(tds_amount: float, invoice_total: float,
                 "tds_status": "rejected", "reasons": ["Invoice total is zero"]}
 
     actual_rate = tds / inv
-    section_key = tds_section if tds_section in TDS_SECTION_RATES else "DEFAULT"
+    section_key = (tds_section or "").upper().strip()
+    section_key = section_key if section_key in TDS_SECTION_RATES else "DEFAULT"
     expected_rate = TDS_SECTION_RATES[section_key]
     expected_tds  = (inv * expected_rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    tol           = expected_tds * AMOUNT_TOLERANCE_PERCENT
+    tol           = max(expected_tds * AMOUNT_TOLERANCE_PERCENT, Decimal("1"))
 
     rate_ok = abs(tds - expected_tds) <= tol
+    # When GST is charged separately, TDS is deducted on the value excluding GST
+    # (CBDT Circular 23/2017). Accept either basis.
+    if not rate_ok and taxable_amount:
+        taxable = Decimal(str(taxable_amount))
+        exp_taxable = (taxable * expected_rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        if abs(tds - exp_taxable) <= max(exp_taxable * AMOUNT_TOLERANCE_PERCENT, Decimal("1")):
+            rate_ok, expected_tds = True, exp_taxable
+            actual_rate = tds / taxable
 
     if actual_rate > MAX_TDS_RATE:
         reasons.append(f"TDS rate {float(actual_rate):.1%} exceeds maximum allowed {float(MAX_TDS_RATE):.1%}")
@@ -148,7 +158,8 @@ def validate_allocation(credit_amount: float, tds_amount: float,
     tds_result = {"valid": True, "tds_status": "n/a", "reasons": []}
     if tds_amount > 0:
         tds_result = validate_tds_claim(
-            tds_amount, invoice["total_amount"], tds_section, has_tds_certificate
+            tds_amount, invoice["total_amount"], tds_section, has_tds_certificate,
+            taxable_amount=invoice.get("taxable_amount"),
         )
 
     return {
@@ -161,3 +172,35 @@ def validate_allocation(credit_amount: float, tds_amount: float,
             (tds_amount > 0 and tds_result["tds_status"] not in ("verified",))
         ),
     }
+
+
+def infer_tds_deduction(credit_amount: float, invoice: dict) -> dict | None:
+    """
+    Detect an *undeclared* TDS deduction: a short payment whose shortfall equals a
+    standard TDS rate on the invoice's taxable value or total.
+
+    Returns {"tds_amount", "sections", "basis", "rate"} or None.
+    Only applies to invoices with nothing paid yet (TDS is computed on the whole bill).
+    """
+    total = Decimal(str(invoice.get("total_amount") or 0))
+    outstanding = Decimal(str(invoice.get("outstanding_amount") or 0))
+    taxable = Decimal(str(invoice.get("taxable_amount") or 0))
+    credit = Decimal(str(credit_amount or 0))
+    if total <= 0 or abs(outstanding - total) > Decimal("0.01"):
+        return None
+    shortfall = total - credit
+    if shortfall <= 0:
+        return None
+    rates: dict[Decimal, list[str]] = {}
+    for sec, rate in TDS_SECTION_RATES.items():
+        if sec != "DEFAULT":
+            rates.setdefault(rate, []).append(sec)
+    for basis, base in (("taxable value", taxable), ("invoice total", total)):
+        if base <= 0:
+            continue
+        for rate, sections in sorted(rates.items()):
+            expected = (base * rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            if abs(shortfall - expected) <= max(expected * AMOUNT_TOLERANCE_PERCENT, Decimal("1")):
+                return {"tds_amount": float(shortfall), "sections": sections, "basis": basis,
+                        "rate": float(rate)}
+    return None

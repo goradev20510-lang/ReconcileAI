@@ -1,0 +1,65 @@
+# ReconcileAI theme
+#
+# Palette: "Invoice & Billing Tool" profile from UI/UX Pro Max (navy + paid green +
+# overdue red + neutral slate), style "Minimalism & Swiss" + "Data-dense dashboard".
+# Type: IBM Plex Sans / IBM Plex Mono ("Financial Trust" pairing).
+# Light is the default; dark follows the OS setting or the in-app theme toggle.
+
+[server]
+maxUploadSize = 25
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+font = "IBM Plex Sans:https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap, sans-serif"
+codeFont = "IBM Plex Mono:https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap, monospace"
+codeFontSize = "0.8125rem"
+headingFontSizes = ["1.75rem", "1.25rem", "1.0625rem", "1rem", "0.9375rem", "0.875rem"]
+headingFontWeights = [600, 600, 600, 600, 600, 600]
+metricValueFontSize = "1.5rem"
+metricValueFontWeight = 600
+baseRadius = "small"
+buttonRadius = "small"
+showWidgetBorder = true
+showSidebarBorder = true
+
+[theme.light]
+primaryColor = "#1E3A5F"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F1F5F9"
+textColor = "#0F172A"
+linkColor = "#1D4ED8"
+borderColor = "#E2E8F0"
+dataframeBorderColor = "#E2E8F0"
+dataframeHeaderBackgroundColor = "#F8FAFC"
+codeBackgroundColor = "#F1F5F9"
+greenColor = "#047857"
+orangeColor = "#B45309"
+redColor = "#B91C1C"
+blueColor = "#1D4ED8"
+grayColor = "#64748B"
+
+[theme.light.sidebar]
+backgroundColor = "#F8FAFC"
+secondaryBackgroundColor = "#EEF2F6"
+
+[theme.dark]
+primaryColor = "#3B82F6"
+backgroundColor = "#0B1220"
+secondaryBackgroundColor = "#162032"
+textColor = "#E2E8F0"
+linkColor = "#93C5FD"
+borderColor = "#243045"
+dataframeBorderColor = "#243045"
+dataframeHeaderBackgroundColor = "#111A2B"
+codeBackgroundColor = "#162032"
+greenColor = "#34D399"
+orangeColor = "#FBBF24"
+redColor = "#F87171"
+blueColor = "#93C5FD"
+grayColor = "#94A3B8"
+
+[theme.dark.sidebar]
+backgroundColor = "#0F1729"
+secondaryBackgroundColor = "#1A2436"
